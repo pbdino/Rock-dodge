@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0a0a1a">
+<title>Rock Dodge</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0a0a1a; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: sans-serif; }
+#hud { display: flex; gap: 1.5rem; margin-bottom: 0.75rem; font-size: 14px; color: #aaa; }
+#hud span { font-weight: 500; color: #fff; }
+#shieldBar { width: 340px; height: 6px; background: #222; border-radius: 3px; margin-bottom: 6px; overflow: hidden; display: none; }
+#shieldFill { height: 100%; background: #5b8dd9; border-radius: 3px; }
+canvas { border: 1px solid #333; border-radius: 12px; background: #0a0a1a; touch-action: none; display: block; }
+#msg { margin-top: 0.75rem; font-size: 13px; color: #aaa; }
+#nameScreen { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 1rem 0; }
+#nameScreen input { font-size: 16px; padding: 8px 14px; border-radius: 8px; border: 1px solid #444; background: #1a1a2a; color: #fff; text-align: center; width: 220px; }
+#nameScreen button { font-size: 15px; padding: 9px 28px; border-radius: 8px; border: 1px solid #444; background: #1a1a2a; color: #fff; cursor: pointer; }
+#nameScreen h3 { font-size: 18px; font-weight: 500; color: #fff; }
+#nameScreen p { font-size: 13px; color: #aaa; }
+#lbPanel { width: 340px; margin-top: 1rem; }
+#lbPanel h3 { font-size: 14px; font-weight: 500; color: #aaa; margin-bottom: 8px; }
+.lb-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border-radius: 8px; font-size: 14px; margin-bottom: 4px; background: #1a1a2a; }
+.lb-rank { font-weight: 500; color: #aaa; width: 20px; }
+.lb-name { flex: 1; color: #fff; font-weight: 500; }
+.lb-score { color: #aaa; }
+.lb-gold .lb-rank { color: #f5c97a; }
+.lb-silver .lb-rank { color: #aaa; }
+.lb-bronze .lb-rank { color: #cd7f32; }
+</style>
+</head>
+<body>
+<div id="nameScreen">
+  <h3>Rock Dodge</h3>
+  <p>Enter your name to play</p>
+  <input id="nameInput" maxlength="16" placeholder="Your name..." autocomplete="off" />
+  <button id="startBtn">Play</button>
+</div>
+<div id="gameArea" style="display:none; flex-direction:column; align-items:center;">
+  <div id="hud">
+    <div>Score <span id="scoreDisplay">0</span></div>
+    <div>Best <span id="bestDisplay">0</span></div>
+    <div>Lives <span id="livesDisplay">♥♥♥</span></div>
+  </div>
+  <div id="shieldBar"><div id="shieldFill"></div></div>
+  <canvas id="canvas" width="340" height="500"></canvas>
+  <div id="msg">Swipe or use ← → arrow keys to dodge</div>
+</div>
+<div id="lbPanel"><h3>Leaderboard</h3><div id="lbList"></div></div>
+<script>
+const canvas=document.getElementById('canvas'),ctx=canvas.getContext('2d'),W=canvas.width,H=canvas.height;
+const scoreEl=document.getElementById('scoreDisplay'),bestEl=document.getElementById('bestDisplay'),livesEl=document.getElementById('livesDisplay');
+const msgEl=document.getElementById('msg'),shieldBar=document.getElementById('shieldBar'),shieldFill=document.getElementById('shieldFill');
+const nameScreen=document.getElementById('nameScreen'),gameArea=document.getElementById('gameArea');
+const nameInput=document.getElementById('nameInput'),startBtn=document.getElementById('startBtn'),lbList=document.getElementById('lbList');
+let playerName='Player',leaderboard=[];
+try{leaderboard=JSON.parse(localStorage.getItem('rockdodge_lb2')||'[]');}catch(e){}
+let state='idle',score=0,best=0,lives=3;
+let player,rocks,particles,frameCount,spawnRate,speed;
+let swipeStartX=null,shieldActive=false,shieldTimer=0,lastShieldMilestone=0;
+let bonusLivesGiven=false,megaRockActive=false,lastMegaMilestone=0;
+let warningAlpha=0,warningDir=1,keysDown={};
+const SHIELD_DURATION=300,MEGA_GAP=72,ARROW_SPEED=5;
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+function playTone(freq,type,dur,vol,t){const o=audioCtx.createOscillator(),g=audioCtx.createGain();o.connect(g);g.connect(audioCtx.destination);o.type=type;o.frequency.setValueAtTime(freq,t);g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(0.001,t+dur);o.start(t);o.stop(t+dur);}
+function sfxHit(){const t=audioCtx.currentTime;playTone(180,'sawtooth',0.15,0.3,t);playTone(120,'sawtooth',0.2,0.2,t+0.05);}
+function sfxShield(){const t=audioCtx.currentTime;[440,550,660,880].forEach((f,i)=>playTone(f,'sine',0.15,0.2,t+i*0.07));}
+function sfxDead(){const t=audioCtx.currentTime;[300,220,160,100].forEach((f,i)=>playTone(f,'sawtooth',0.25,0.3,t+i*0.12));}
+function sfxMilestone(){const t=audioCtx.currentTime;[523,659,784,1047].forEach((f,i)=>playTone(f,'square',0.1,0.15,t+i*0.08));}
+function sfxDodge(){playTone(600,'sine',0.05,0.08,audioCtx.currentTime);}
+function sfxExtraLife(){const t=audioCtx.currentTime;[330,440,550,660,880].forEach((f,i)=>playTone(f,'sine',0.18,0.25,t+i*0.09));}
+function sfxWarning(){const t=audioCtx.currentTime;playTone(80,'sawtooth',0.3,0.4,t);playTone(60,'sawtooth',0.3,0.3,t+0.15);}
+function sfxMegaLand(){const t=audioCtx.currentTime;playTone(60,'sawtooth',0.4,0.5,t);playTone(40,'sawtooth',0.5,0.4,t+0.05);}
+function saveLB(){leaderboard.push({name:playerName,score});leaderboard.sort((a,b)=>b.score-a.score);leaderboard=leaderboard.slice(0,10);try{localStorage.setItem('rockdodge_lb2',JSON.stringify(leaderboard));}catch(e){}renderLB();}
+function renderLB(){if(!leaderboard.length){lbList.innerHTML='<div style="font-size:13px;color:#aaa;padding:4px 10px;">No scores yet!</div>';return;}const medals=['lb-gold','lb-silver','lb-bronze'];lbList.innerHTML=leaderboard.slice(0,8).map((e,i)=>`<div class="lb-row ${medals[i]||''}"><span class="lb-rank">${i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}</span><span class="lb-name">${e.name.substring(0,14)}</span><span class="lb-score">${e.score}</span></div>`).join('');}
+function initGame(){player={x:W/2,y:H-60,targetX:W/2,invincible:0};rocks=[];particles=[];score=0;lives=3;frameCount=0;spawnRate=70;speed=3;shieldActive=false;shieldTimer=0;lastShieldMilestone=0;bonusLivesGiven=false;megaRockActive=false;lastMegaMilestone=0;warningAlpha=0;warningDir=1;keysDown={};shieldBar.style.display='none';updateHUD();}
+function updateHUD(){scoreEl.textContent=score;bestEl.textContent=best;livesEl.textContent='♥'.repeat(Math.min(lives,8))+(lives>8?'+':'');}
+function makeRockShape(r,n){const pts=[];for(let i=0;i<n;i++){const a=(i/n)*Math.PI*2,noise=0.65+0.35*Math.abs(Math.sin(i*1.7+r*0.1));pts.push({x:Math.cos(a)*r*noise,y:Math.sin(a)*r*noise});}return pts;}
+function spawnRock(){const sz=18+Math.random()*22,drift=(Math.random()-0.5)*0.6;rocks.push({x:sz+Math.random()*(W-sz*2),y:-sz,vx:drift,vy:speed+Math.random()*1.5+0.5,r:sz,rot:Math.random()*Math.PI*2,rotSpeed:(Math.random()-0.5)*0.06,mega:false,pts:makeRockShape(sz,9),shade:Math.floor(Math.random()*4),crack:Math.random()>0.5,crackAngle:Math.random()*Math.PI});}
+function spawnMegaRock(){const gapX=MEGA_GAP+Math.random()*(W-MEGA_GAP*2);rocks.push({x:gapX,y:-80,r:W*0.5,speed:1.8,rot:0,rotSpeed:0,mega:true,gapX:gapX,gapW:MEGA_GAP});sfxWarning();}
+const rockColors=[{base:'#7a6a5a',light:'#9a8a78',dark:'#4a3a2c'},{base:'#8a7a6a',light:'#aA9a88',dark:'#5a4a38'},{base:'#6a5a4a',light:'#8a7a68',dark:'#3a2c20'},{base:'#9a8a7a',light:'#bAaA98',dark:'#6a5a48'}];
+function drawRockShape(r){ctx.save();ctx.translate(r.x,r.y);ctx.rotate(r.rot);const c=rockColors[r.shade];ctx.beginPath();ctx.moveTo(r.pts[0].x,r.pts[0].y);for(let i=1;i<r.pts.length;i++)ctx.lineTo(r.pts[i].x,r.pts[i].y);ctx.closePath();ctx.fillStyle=c.base;ctx.fill();ctx.fillStyle='rgba(0,0,0,0.22)';ctx.fill();const hl=r.pts.slice(0,4);ctx.beginPath();ctx.moveTo(0,0);hl.forEach(p=>ctx.lineTo(p.x*0.7,p.y*0.7));ctx.closePath();ctx.fillStyle=c.light+'44';ctx.fill();if(r.crack){ctx.strokeStyle=c.dark;ctx.lineWidth=1.2;ctx.beginPath();ctx.moveTo(Math.cos(r.crackAngle)*r.r*0.2,Math.sin(r.crackAngle)*r.r*0.2);ctx.lineTo(Math.cos(r.crackAngle)*r.r*0.65,Math.sin(r.crackAngle)*r.r*0.65);ctx.moveTo(Math.cos(r.crackAngle)*r.r*0.35,Math.sin(r.crackAngle)*r.r*0.35);ctx.lineTo(Math.cos(r.crackAngle+0.6)*r.r*0.5,Math.sin(r.crackAngle+0.6)*r.r*0.5);ctx.stroke();}ctx.restore();}
+function drawMegaRock(r){ctx.save();ctx.translate(r.x,r.y);const left=r.gapX-r.x-r.gapW/2,right=r.gapX-r.x+r.gapW/2;ctx.fillStyle='#2e2016';ctx.fillRect(-W,-r.r,left+W,r.r*2);ctx.fillRect(right,-r.r,W,r.r*2);ctx.strokeStyle='rgba(0,0,0,0.3)';ctx.lineWidth=2;for(let ly=-r.r+10;ly<r.r;ly+=18){ctx.beginPath();ctx.moveTo(-W,ly);ctx.lineTo(left,ly);ctx.stroke();ctx.beginPath();ctx.moveTo(right,ly);ctx.lineTo(W,ly);ctx.stroke();}ctx.strokeStyle='#e87040';ctx.lineWidth=2.5;ctx.setLineDash([8,5]);ctx.beginPath();ctx.moveTo(left,-r.r);ctx.lineTo(left,r.r);ctx.stroke();ctx.beginPath();ctx.moveTo(right,-r.r);ctx.lineTo(right,r.r);ctx.stroke();ctx.setLineDash([]);ctx.fillStyle='#1a1008';ctx.beginPath();ctx.moveTo(-W,r.r-4);for(let ix=-W;ix<left;ix+=12)ctx.lineTo(ix,r.r-4+Math.sin(ix*0.4+r.y*0.05)*5);ctx.lineTo(left,r.r+10);ctx.lineTo(-W,r.r+10);ctx.closePath();ctx.fill();ctx.beginPath();ctx.moveTo(right,r.r-4);for(let ix=right;ix<W;ix+=12)ctx.lineTo(ix,r.r-4+Math.sin(ix*0.4+r.y*0.05)*5);ctx.lineTo(W,r.r+10);ctx.lineTo(right,r.r+10);ctx.closePath();ctx.fill();ctx.restore();}
+function drawRock(r){if(r.mega){drawMegaRock(r);return;}drawRockShape(r);}
+function drawPlayer(p){const flash=p.invincible>0&&Math.floor(p.invincible/4)%2===0;if(flash&&!shieldActive)return;ctx.save();ctx.translate(p.x,p.y);if(shieldActive){const pulse=0.7+0.3*Math.sin(frameCount*0.3),prog=shieldTimer/SHIELD_DURATION;ctx.beginPath();ctx.arc(0,-5,28*pulse,0,Math.PI*2);ctx.fillStyle=`rgba(91,141,217,${0.15*pulse})`;ctx.fill();ctx.strokeStyle=`rgba(91,141,217,${0.7*prog})`;ctx.lineWidth=2;ctx.stroke();}ctx.fillStyle='#5b8dd9';ctx.beginPath();ctx.ellipse(0,6,10,14,0,0,Math.PI*2);ctx.fill();ctx.fillStyle='#f5c97a';ctx.beginPath();ctx.arc(0,-14,10,0,Math.PI*2);ctx.fill();ctx.fillStyle='#3a5fa0';ctx.fillRect(-12,0,8,20);ctx.fillRect(4,0,8,20);ctx.fillRect(-6,20,5,14);ctx.fillRect(1,20,5,14);ctx.fillStyle='#222';ctx.beginPath();ctx.arc(-3,-14,2,0,Math.PI*2);ctx.arc(3,-14,2,0,Math.PI*2);ctx.fill();ctx.restore();}
+function drawParticle(p){ctx.globalAlpha=p.life/p.maxLife;ctx.fillStyle=p.color;ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();ctx.globalAlpha=1;}
+function burst(x,y,colors){const cols=colors||['#f5c97a','#e87040','#fff'];for(let i=0;i<14;i++){const a=Math.random()*Math.PI*2,spd=1+Math.random()*4;particles.push({x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,r:2+Math.random()*4,life:40,maxLife:40,color:cols[Math.floor(Math.random()*cols.length)]});}}
+function checkHitNormal(p,r){const dx=p.x-r.x,dy=(p.y-10)-r.y;return Math.sqrt(dx*dx+dy*dy)<r.r+10;}
+function checkHitMega(p,r){const py=(p.y-10)-r.y;if(py<-r.r-20||py>r.r+20)return false;return Math.abs(p.x-r.gapX)>r.gapW/2-12;}
+const stars=Array.from({length:50},()=>({x:Math.random()*W,y:Math.random()*H,r:Math.random()*1.8,b:Math.random()}));
+function drawBG(){ctx.fillStyle='#0a0a1a';ctx.fillRect(0,0,W,H);stars.forEach(s=>{ctx.globalAlpha=0.25+0.35*Math.sin(frameCount*0.025+s.b*10);ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(s.x,s.y,s.r,0,Math.PI*2);ctx.fill();});ctx.globalAlpha=1;}
+function drawWarning(r){if(!r||r.y>-10)return;warningAlpha+=0.06*warningDir;if(warningAlpha>=1)warningDir=-1;if(warningAlpha<=0)warningDir=1;ctx.globalAlpha=Math.max(0,warningAlpha);ctx.fillStyle='#e87040';ctx.font='500 13px sans-serif';ctx.textAlign='center';ctx.fillText('⚠ MEGA ROCK INCOMING ⚠',W/2,20);ctx.fillStyle='rgba(232,112,64,0.1)';ctx.fillRect(r.gapX-r.gapW/2,0,r.gapW,H);ctx.strokeStyle='rgba(232,112,64,0.6)';ctx.lineWidth=1.5;ctx.setLineDash([6,4]);ctx.beginPath();ctx.moveTo(r.gapX-r.gapW/2,0);ctx.lineTo(r.gapX-r.gapW/2,H);ctx.stroke();ctx.beginPath();ctx.moveTo(r.gapX+r.gapW/2,0);ctx.lineTo(r.gapX+r.gapW/2,H);ctx.stroke();ctx.setLineDash([]);ctx.globalAlpha=1;}
+function drawShieldProgress(){if(shieldActive||megaRockActive)return;const prog=(score%100)/100,next=(Math.floor(score/100)+1)*100,bw=W-40;ctx.fillStyle='rgba(255,255,255,0.07)';ctx.fillRect(20,H-18,bw,5);ctx.fillStyle='#5b8dd9';ctx.fillRect(20,H-18,bw*prog,5);ctx.fillStyle='rgba(255,255,255,0.4)';ctx.font='10px sans-serif';ctx.textAlign='center';ctx.fillText('shield at '+next,W/2,H-22);}
+function handleArrowKeys(){if(state!=='playing')return;if(keysDown['ArrowLeft']||keysDown['Left']){player.targetX=Math.max(20,player.targetX-ARROW_SPEED);player.x=Math.max(20,player.x-ARROW_SPEED);}if(keysDown['ArrowRight']||keysDown['Right']){player.targetX=Math.min(W-20,player.targetX+ARROW_SPEED);player.x=Math.min(W-20,player.x+ARROW_SPEED);}}
+function loop(){ctx.clearRect(0,0,W,H);drawBG();
+if(state==='idle'){ctx.fillStyle='#fff';ctx.font='500 28px sans-serif';ctx.textAlign='center';ctx.fillText('ROCK DODGE',W/2,H/2-30);ctx.font='400 15px sans-serif';ctx.fillStyle='#aaa';ctx.fillText('Tap or press any key to start',W/2,H/2+10);requestAnimationFrame(loop);return;}
+if(state==='dead'){ctx.fillStyle='#fff';ctx.font='500 26px sans-serif';ctx.textAlign='center';ctx.fillText('GAME OVER',W/2,H/2-50);ctx.font='400 15px sans-serif';ctx.fillStyle='#aaa';ctx.fillText('Score: '+score,W/2,H/2-15);ctx.fillText(playerName+"'s best: "+best,W/2,H/2+15);ctx.fillText('Tap or press any key to play again',W/2,H/2+50);particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.life--;drawParticle(p);});particles=particles.filter(p=>p.life>0);requestAnimationFrame(loop);return;}
+handleArrowKeys();frameCount++;score=Math.floor(frameCount/30);if(score>best)best=score;updateHUD();
+if(score>=200&&!bonusLivesGiven){bonusLivesGiven=true;lives+=2;burst(player.x,player.y-10,['#f5c97a','#fff','#e87040']);sfxExtraLife();updateHUD();}
+const sMilestone=Math.floor(score/100)*100;if(score>0&&score%100<1&&sMilestone>lastShieldMilestone){lastShieldMilestone=sMilestone;shieldActive=true;shieldTimer=SHIELD_DURATION;shieldBar.style.display='block';burst(player.x,player.y-10,['#5b8dd9','#a0c4ff','#fff']);sfxShield();sfxMilestone();}
+if(shieldActive){shieldTimer--;shieldFill.style.width=Math.round((shieldTimer/SHIELD_DURATION)*100)+'%';if(shieldTimer<=0){shieldActive=false;shieldBar.style.display='none';}}
+const mMilestone=Math.floor(score/75)*75;if(score>0&&score%75<1&&mMilestone>lastMegaMilestone&&!megaRockActive){lastMegaMilestone=mMilestone;megaRockActive=true;rocks=rocks.filter(r=>!r.mega);spawnMegaRock();}
+speed=3.25+frameCount/530;spawnRate=Math.max(22,70-frameCount/38);if(!megaRockActive&&frameCount%Math.floor(spawnRate)===0)spawnRock();
+player.x+=(player.targetX-player.x)*0.31;if(player.invincible>0)player.invincible--;
+rocks.forEach(r=>{if(r.mega){r.y+=r.speed;return;}r.y+=r.vy;r.x+=r.vx;r.rot+=r.rotSpeed;if(r.x-r.r<0){r.x=r.r;r.vx=0;}if(r.x+r.r>W){r.x=W-r.r;r.vx=0;}});
+const megaRock=rocks.find(r=>r.mega);if(megaRock&&megaRock.y<0)drawWarning(megaRock);if(megaRock&&megaRock.y>=H+80){megaRockActive=false;rocks=rocks.filter(r=>!r.mega);sfxMegaLand();}
+if(player.invincible===0&&!shieldActive){rocks.forEach(r=>{const hit=r.mega?checkHitMega(player,r):checkHitNormal(player,r);if(hit){burst(player.x,player.y-10);sfxHit();lives--;player.invincible=80;if(lives<=0){state='dead';sfxDead();saveLB();updateHUD();}}});}
+else if(shieldActive){rocks=rocks.filter(r=>{if(!r.mega&&checkHitNormal(player,r)){burst(r.x,r.y,['#5b8dd9','#a0c4ff','#fff']);sfxDodge();return false;}return true;});}
+rocks=rocks.filter(r=>r.mega||r.y<H+r.r+20);particles.forEach(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=0.15;p.life--;});particles=particles.filter(p=>p.life>0);
+rocks.forEach(drawRock);particles.forEach(drawParticle);drawPlayer(player);drawShieldProgress();requestAnimationFrame(loop);}
+document.addEventListener('keydown',e=>{keysDown[e.key]=true;if(state==='idle'||state==='dead'){audioCtx.resume();if(state==='idle'){initGame();state='playing';msgEl.textContent='Swipe or use ← → arrow keys!';}else if(state==='dead'){initGame();state='playing';}}if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key))e.preventDefault();});
+document.addEventListener('keyup',e=>{keysDown[e.key]=false;});
+canvas.addEventListener('pointerdown',e=>{audioCtx.resume();const rect=canvas.getBoundingClientRect();swipeStartX=e.clientX-rect.left;if(state==='idle'){initGame();state='playing';msgEl.textContent='Swipe or use ← → arrow keys!';}else if(state==='dead'){initGame();state='playing';}});
+canvas.addEventListener('pointermove',e=>{if(state!=='playing'||swipeStartX===null)return;const rect=canvas.getBoundingClientRect();const curX=e.clientX-rect.left;player.targetX=Math.max(20,Math.min(W-20,player.x+(curX-swipeStartX)*1.1));swipeStartX=curX;});
+canvas.addEventListener('pointerup',()=>swipeStartX=null);
+canvas.addEventListener('pointerleave',()=>swipeStartX=null);
+startBtn.addEventListener('click',()=>{const n=nameInput.value.trim();playerName=n.length>0?n:'Player';nameScreen.style.display='none';gameArea.style.display='flex';renderLB();loop();});
+nameInput.addEventListener('keydown',e=>{if(e.key==='Enter')startBtn.click();});
+renderLB();
+</script>
+</body>
+</html>
